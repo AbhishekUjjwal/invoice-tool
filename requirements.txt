@@ -1,0 +1,6 @@
+streamlit
+pandas
+pymupdf
+openpyxl
+python-barcode
+Pillow
