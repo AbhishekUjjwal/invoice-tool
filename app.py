@@ -14,7 +14,10 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur Invoice PDF upload karein. **Big Size Barcode** stamp hoga jo easily scan ho sake.")
+st.write("Shipment Report aur Invoice PDF upload karein. **PAN: AALCR5906L** ke invoices filter hokar Barcode stamp hoga.")
+
+# Target PAN Number jisko filter karna hai
+TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
 uploaded_csv = st.file_uploader("1. Upload Shipment Report (CSV / Excel)", type=["csv", "xlsx", "xls"])
@@ -40,9 +43,9 @@ def generate_barcode_image(code_text):
             buffer,
             options={
                 'write_text': False,
-                'module_width': 0.80,       # Bars ko kaafi chauda/thick banaya
-                'module_height': 25.0,      # Vertical bars ko lamba kiya
-                'quiet_zone': 2.0,          # Clear white margins on both sides
+                'module_width': 0.80,       # Extra thick bars
+                'module_height': 25.0,      # Taller bars
+                'quiet_zone': 2.0,
                 'dpi': 300
             }
         )
@@ -92,7 +95,7 @@ if uploaded_csv and uploaded_pdf:
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}**")
 
-    if st.button("🚀 Process & Generate Large Barcode PDF", type="primary"):
+    if st.button("🚀 Process & Filter Invoices (PAN: AALCR5906L)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -102,7 +105,8 @@ if uploaded_csv and uploaded_pdf:
 
         total_pages = len(doc)
         matched_count = 0
-        removed_pages = 0
+        removed_pan_pages = 0
+        skipped_no_match = 0
 
         for page_num in range(total_pages):
             progress = (page_num + 1) / total_pages
@@ -113,8 +117,9 @@ if uploaded_csv and uploaded_pdf:
             raw_text = page.get_text()
             text_lower = raw_text.lower()
 
-            if "description" not in text_lower:
-                removed_pages += 1
+            # Rule 1: Agar page par target PAN number nahi hai, to turant discard/remove karo
+            if TARGET_PAN not in text_lower:
+                removed_pan_pages += 1
                 continue
 
             order_match = re.search(r'\b\d{3}-\d{7}-\d{7}\b', raw_text)
@@ -123,7 +128,7 @@ if uploaded_csv and uploaded_pdf:
             if order_match:
                 found_order_id = order_match.group(0).lower()
 
-                # Step A: Match un-used record by Order ID + SKU
+                # Match by Order ID + SKU
                 matched_rec = None
                 for rec in shipment_records:
                     if not rec["used"] and rec["order_id"] == found_order_id:
@@ -131,7 +136,7 @@ if uploaded_csv and uploaded_pdf:
                             matched_rec = rec
                             break
 
-                # Step B: Fallback un-used record of same Order ID
+                # Fallback Match by Order ID
                 if not matched_rec:
                     for rec in shipment_records:
                         if not rec["used"] and rec["order_id"] == found_order_id:
@@ -142,14 +147,11 @@ if uploaded_csv and uploaded_pdf:
                     target_tracking_id = matched_rec["track"]
                     matched_rec["used"] = True
 
-            # EXTRA LARGE BARCODE STAMPING
+            # Rule 2: Barcode stamp karo
             if target_tracking_id:
-                # 1. BADA BARCODE AREA (Amazon logo smile ke theek niche)
-                # X: 22 se lekar 295 tak (Width = 273 points - bohot chauda)
-                # Y: 56 se lekar 88 tak (Height = 32 points - lambi bars)
                 barcode_rect = fitz.Rect(22, 56, 295, 88)
 
-                # Pure white background taaki scanner ko clear contrast mile
+                # Pure white clean background box
                 page.draw_rect(
                     barcode_rect,
                     color=(1.0, 1.0, 1.0),
@@ -159,11 +161,8 @@ if uploaded_csv and uploaded_pdf:
 
                 barcode_img_bytes = generate_barcode_image(target_tracking_id)
                 if barcode_img_bytes:
-                    # Barcode ko full stretch me print karein
                     page.insert_image(barcode_rect, stream=barcode_img_bytes, keep_proportion=False)
 
-                # 2. TRACKING NUMBER TEXT (Barcode ke theek niche)
-                # Y = 98 par bold black text
                 stamp_msg = f"TRACKING: {target_tracking_id}"
                 page.insert_text(
                     (barcode_rect.x0 + 55, 98),
@@ -173,8 +172,10 @@ if uploaded_csv and uploaded_pdf:
                     color=(0, 0, 0)
                 )
                 matched_count += 1
-
-            new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                # Sirf valid aur matched page ko hi final PDF me save karo
+                new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+            else:
+                skipped_no_match += 1
 
         output_buffer = io.BytesIO()
         new_doc.save(output_buffer)
@@ -184,11 +185,16 @@ if uploaded_csv and uploaded_pdf:
         progress_bar.empty()
 
         st.balloons()
-        st.success(f"🎉 Complete! Total **{matched_count}** Invoices par Extra Large Barcode stamp ho gaya.")
+        st.success(
+            f"🎉 **Done!**\n\n"
+            f"- Total Stamped & Saved: **{matched_count}** pages\n"
+            f"- Wrong PAN / Blank Removed: **{removed_pan_pages}** pages\n"
+            f"- Unmatched Tracking Removed: **{skipped_no_match}** pages"
+        )
 
         st.download_button(
-            label="📥 Download Large Barcode PDF",
+            label="📥 Download Filtered Barcode PDF",
             data=output_buffer,
-            file_name=f"Stamped_{uploaded_pdf.name}",
+            file_name=f"Stamped_Filtered_{uploaded_pdf.name}",
             mime="application/pdf"
         )
