@@ -14,9 +14,9 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur Invoice PDF upload karein. **PAN: AALCR5906L** ke invoices filter hokar Barcode stamp hoga.")
+st.write("Shipment Report aur Invoice PDF upload karein. **Strict PAN Filter (AALCR5906L)** apply hoga.")
 
-# Target PAN Number jisko filter karna hai
+# Target PAN jisko rakhna hai (baaki sab remove honge)
 TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
@@ -31,7 +31,7 @@ def clean_val(v):
     return s.strip()
 
 def generate_barcode_image(code_text):
-    """Large & Thick Code128 Barcode for Instant Scanner Detection"""
+    """Clean & Crisp Code128 Barcode"""
     try:
         code128 = barcode.get_barcode_class('code128')
         writer = ImageWriter()
@@ -43,9 +43,9 @@ def generate_barcode_image(code_text):
             buffer,
             options={
                 'write_text': False,
-                'module_width': 0.80,       # Extra thick bars
-                'module_height': 25.0,      # Taller bars
-                'quiet_zone': 2.0,
+                'module_width': 0.45,       # Balanced thickness
+                'module_height': 15.0,      # Compact height
+                'quiet_zone': 1.5,
                 'dpi': 300
             }
         )
@@ -95,7 +95,7 @@ if uploaded_csv and uploaded_pdf:
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}**")
 
-    if st.button("🚀 Process & Filter Invoices (PAN: AALCR5906L)", type="primary"):
+    if st.button("🚀 Process & Filter Invoices (Exact Match)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -106,7 +106,7 @@ if uploaded_csv and uploaded_pdf:
         total_pages = len(doc)
         matched_count = 0
         removed_pan_pages = 0
-        skipped_no_match = 0
+        skipped_no_tracking = 0
 
         for page_num in range(total_pages):
             progress = (page_num + 1) / total_pages
@@ -117,7 +117,7 @@ if uploaded_csv and uploaded_pdf:
             raw_text = page.get_text()
             text_lower = raw_text.lower()
 
-            # Rule 1: Agar page par target PAN number nahi hai, to turant discard/remove karo
+            # Rule 1: PAN check (AALCR5906L hona zaroori hai)
             if TARGET_PAN not in text_lower:
                 removed_pan_pages += 1
                 continue
@@ -136,7 +136,7 @@ if uploaded_csv and uploaded_pdf:
                             matched_rec = rec
                             break
 
-                # Fallback Match by Order ID
+                # Fallback match by Order ID
                 if not matched_rec:
                     for rec in shipment_records:
                         if not rec["used"] and rec["order_id"] == found_order_id:
@@ -147,11 +147,11 @@ if uploaded_csv and uploaded_pdf:
                     target_tracking_id = matched_rec["track"]
                     matched_rec["used"] = True
 
-            # Rule 2: Barcode stamp karo
+            # Rule 2: Barcode & BOLD Tracking Stamping
             if target_tracking_id:
-                barcode_rect = fitz.Rect(22, 56, 295, 88)
+                # Barcode area
+                barcode_rect = fitz.Rect(40, 58, 235, 82)
 
-                # Pure white clean background box
                 page.draw_rect(
                     barcode_rect,
                     color=(1.0, 1.0, 1.0),
@@ -163,19 +163,19 @@ if uploaded_csv and uploaded_pdf:
                 if barcode_img_bytes:
                     page.insert_image(barcode_rect, stream=barcode_img_bytes, keep_proportion=False)
 
+                # BOLD aur BADA Tracking ID Text
                 stamp_msg = f"TRACKING: {target_tracking_id}"
                 page.insert_text(
-                    (barcode_rect.x0 + 55, 98),
+                    (barcode_rect.x0 + 10, 95),
                     stamp_msg,
-                    fontsize=9.5,
-                    fontname="helv",
+                    fontsize=10.5,                 # Bada font
+                    fontname="hebo",                 # BOLD Helvetica
                     color=(0, 0, 0)
                 )
                 matched_count += 1
-                # Sirf valid aur matched page ko hi final PDF me save karo
                 new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
             else:
-                skipped_no_match += 1
+                skipped_no_tracking += 1
 
         output_buffer = io.BytesIO()
         new_doc.save(output_buffer)
@@ -186,15 +186,15 @@ if uploaded_csv and uploaded_pdf:
 
         st.balloons()
         st.success(
-            f"🎉 **Done!**\n\n"
+            f"🎉 **Filtering Complete!**\n\n"
             f"- Total Stamped & Saved: **{matched_count}** pages\n"
-            f"- Wrong PAN / Blank Removed: **{removed_pan_pages}** pages\n"
-            f"- Unmatched Tracking Removed: **{skipped_no_match}** pages"
+            f"- Wrong PAN Removed: **{removed_pan_pages}** pages\n"
+            f"- Missing Tracking Removed: **{skipped_no_tracking}** pages"
         )
 
         st.download_button(
             label="📥 Download Filtered Barcode PDF",
             data=output_buffer,
-            file_name=f"Stamped_Filtered_{uploaded_pdf.name}",
+            file_name=f"Filtered_Stamped_{uploaded_pdf.name}",
             mime="application/pdf"
         )
