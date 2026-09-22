@@ -43,8 +43,8 @@ def generate_barcode_image(code_text):
             buffer,
             options={
                 'write_text': False,
-                'module_width': 0.45,       # Balanced thickness
-                'module_height': 15.0,      # Compact height
+                'module_width': 0.45,
+                'module_height': 15.0,
                 'quiet_zone': 1.5,
                 'dpi': 300
             }
@@ -147,9 +147,9 @@ if uploaded_csv and uploaded_pdf:
                     target_tracking_id = matched_rec["track"]
                     matched_rec["used"] = True
 
-            # Rule 2: Barcode & BOLD Tracking Stamping
+            # Rule 2: Barcode & Tracking Stamping
             if target_tracking_id:
-                # Barcode area
+                # Top Barcode area
                 barcode_rect = fitz.Rect(40, 58, 235, 82)
 
                 page.draw_rect(
@@ -163,15 +163,31 @@ if uploaded_csv and uploaded_pdf:
                 if barcode_img_bytes:
                     page.insert_image(barcode_rect, stream=barcode_img_bytes, keep_proportion=False)
 
-                # BOLD aur BADA Tracking ID Text
+                # 1. Barcode ke neeche BOLD Tracking ID
                 stamp_msg = f"TRACKING: {target_tracking_id}"
                 page.insert_text(
                     (barcode_rect.x0 + 10, 95),
                     stamp_msg,
-                    fontsize=10.5,                 # Bada font
-                    fontname="hebo",                 # BOLD Helvetica
+                    fontsize=10.5,
+                    fontname="hebo",
                     color=(0, 0, 0)
                 )
+
+                # 2. Addon: Order Date ke theek neeche BOLD Tracking ID
+                date_instances = page.search_for("Order Date:")
+                if not date_instances:
+                    date_instances = page.search_for("Order Date")
+
+                if date_instances:
+                    first_date_rect = date_instances[0]
+                    page.insert_text(
+                        (first_date_rect.x0, first_date_rect.y1 + 13),
+                        f"Tracking ID: {target_tracking_id}",
+                        fontsize=9.5,
+                        fontname="hebo",
+                        color=(0, 0, 0)
+                    )
+
                 matched_count += 1
                 new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
             else:
