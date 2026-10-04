@@ -3,6 +3,7 @@ import pandas as pd
 import pymupdf as fitz
 import re
 import io
+import zipfile
 import barcode
 from barcode.writer import ImageWriter
 
@@ -13,14 +14,17 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur **Multiple/Bulk Invoice PDFs** upload karein. **Strict PAN (AALCR5906L) + Multi-SKU Tracking** auto-apply hoga.")
+st.write("Shipment Report aur multiple Invoice PDFs upload karein. **Har file alag-alag process aur download hogi** (PAN: AALCR5906L strict filter ke sath).")
 
 TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
 uploaded_csv = st.file_uploader("1. Upload Shipment Report (CSV / Excel)", type=["csv", "xlsx", "xls"])
-# Bulk / Multiple PDF upload enable kar diya gaya hai
-uploaded_pdfs = st.file_uploader("2. Upload Invoice PDF(s) - Ek sath multiple files select kar sakte hain", type=["pdf"], accept_multiple_files=True)
+uploaded_pdfs = st.file_uploader(
+    "2. Upload Invoice PDF(s) - Ek sath multiple files select karein",
+    type=["pdf"],
+    accept_multiple_files=True
+)
 
 def clean_val(v):
     if pd.isna(v):
@@ -97,37 +101,36 @@ if uploaded_csv and uploaded_pdfs:
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}** | Selected PDFs: **{len(uploaded_pdfs)} file(s)**")
 
-    if st.button("🚀 Process & Stamp All Invoices (Bulk)", type="primary"):
+    if st.button("🚀 Process Invoices Individually", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        new_doc = fitz.open()
+        processed_files = []
         total_files = len(uploaded_pdfs)
-        total_pages_all = 0
-        matched_count = 0
-        removed_pan_pages = 0
 
-        # Sabhi uploaded PDFs ko ek-ek karke process karein
         for file_idx, pdf_file in enumerate(uploaded_pdfs):
+            status_text.text(f"Processing File {file_idx+1}/{total_files}: {pdf_file.name}...")
+            
             pdf_bytes = pdf_file.read()
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            new_doc = fitz.open()
+
             total_pages = len(doc)
-            total_pages_all += total_pages
+            file_stamped_count = 0
+            file_removed_pan = 0
 
             for page_num in range(total_pages):
-                status_text.text(f"Processing File {file_idx+1}/{total_files}: {pdf_file.name} (Page {page_num+1}/{total_pages})...")
-
                 page = doc[page_num]
                 raw_text = page.get_text()
                 text_lower = raw_text.lower()
                 text_clean = clean_alphanumeric(raw_text)
 
-                # Rule 1: PAN Filter
+                # Rule 1: PAN Check
                 if TARGET_PAN not in text_lower:
-                    removed_pan_pages += 1
+                    file_removed_pan += 1
                     continue
 
-                # Extract Order ID
+                # Order Number detect karna
                 order_clean = None
                 order_match = re.search(r'(\d{3})\s*[-–—]\s*(\d{7})\s*[-–—]\s*(\d{7})', raw_text)
                 if order_match:
@@ -145,7 +148,7 @@ if uploaded_csv and uploaded_pdfs:
                     if len(matching_rows) == 1:
                         target_tracking_id = matching_rows[0]["track"]
                     elif len(matching_rows) > 1:
-                        # 1. Bracket extraction: ( SKU )
+                        # Brackets se SKU match karein: ( SKU )
                         brackets = re.findall(r'\(\s*([^()]+?)\s*\)', raw_text)
                         cleaned_bracket_items = [clean_alphanumeric(b) for b in brackets]
 
@@ -155,7 +158,7 @@ if uploaded_csv and uploaded_pdfs:
                                 r["used"] = True
                                 break
 
-                        # 2. Page text me clean SKU search
+                        # Page text me SKU search
                         if not target_tracking_id:
                             for r in matching_rows:
                                 if not r["used"] and (r["sku_clean"] and r["sku_clean"] in text_clean):
@@ -163,7 +166,7 @@ if uploaded_csv and uploaded_pdfs:
                                     r["used"] = True
                                     break
 
-                        # 3. Agar abhi bhi na mile to agla unused tracking assign karein
+                        # Fallback if needed
                         if not target_tracking_id:
                             unused = [r for r in matching_rows if not r["used"]]
                             if unused:
@@ -172,7 +175,7 @@ if uploaded_csv and uploaded_pdfs:
                             else:
                                 target_tracking_id = matching_rows[0]["track"]
 
-                # Rule 2: Barcode & Tracking Stamping
+                # Stamping
                 if target_tracking_id:
                     barcode_rect = fitz.Rect(40, 58, 235, 82)
                     page.draw_rect(barcode_rect, color=(1.0, 1.0, 1.0), fill=(1.0, 1.0, 1.0), width=0)
@@ -200,31 +203,61 @@ if uploaded_csv and uploaded_pdfs:
                             color=(0, 0, 0)
                         )
 
-                    matched_count += 1
+                    file_stamped_count += 1
 
                 new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
-            progress_bar.progress((file_idx + 1) / total_files)
+            # File save in buffer
+            out_buf = io.BytesIO()
+            new_doc.save(out_buf)
+            out_buf.seek(0)
 
-        output_buffer = io.BytesIO()
-        new_doc.save(output_buffer)
-        output_buffer.seek(0)
+            out_filename = f"Stamped_{pdf_file.name}"
+            processed_files.append({
+                "original_name": pdf_file.name,
+                "file_name": out_filename,
+                "data": out_buf.getvalue(),
+                "pages": len(new_doc),
+                "stamped": file_stamped_count,
+                "removed": file_removed_pan
+            })
+
+            progress_bar.progress((file_idx + 1) / total_files)
 
         status_text.empty()
         progress_bar.empty()
 
         st.balloons()
-        st.success(
-            f"🎉 **Bulk Processing Complete!**\n\n"
-            f"- Total Files Processed: **{total_files}**\n"
-            f"- Total Pages Kept: **{len(new_doc)}**\n"
-            f"- Barcode Stamped: **{matched_count}** pages\n"
-            f"- Non-PAN Removed: **{removed_pan_pages}** pages"
-        )
+        st.success(f"🎉 **Total {len(processed_files)} Files Processed Successfully!**")
 
-        st.download_button(
-            label="📥 Download Merged & Stamped Barcode PDF",
-            data=output_buffer,
-            file_name="All_Invoices_Stamped.pdf",
-            mime="application/pdf"
-        )
+        # ZIP of all files for convenience
+        if len(processed_files) > 1:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for item in processed_files:
+                    zip_file.writestr(item["file_name"], item["data"])
+            zip_buffer.seek(0)
+
+            st.download_button(
+                label="📦 Download All Files as ZIP",
+                data=zip_buffer,
+                file_name="All_Stamped_Invoices.zip",
+                mime="application/zip",
+                type="primary"
+            )
+            st.write("---")
+
+        # Individual Download Buttons for each file
+        st.subheader("📄 Download Individual Files:")
+        for idx, item in enumerate(processed_files):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"**{item['original_name']}** — ({item['pages']} pages kept, {item['stamped']} stamped, {item['removed']} non-PAN removed)")
+            with col2:
+                st.download_button(
+                    label=f"📥 Download PDF",
+                    data=item["data"],
+                    file_name=item["file_name"],
+                    mime="application/pdf",
+                    key=f"dl_btn_{idx}"
+                )
