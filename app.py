@@ -13,6 +13,7 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
+st.write("Shipment Report aur Invoice PDF upload karein. **Strict PAN + Exact Multi-SKU Tracking Match** apply hoga.")
 
 TARGET_PAN = "aalcr5906l"
 
@@ -27,6 +28,7 @@ def clean_val(v):
     return s.strip()
 
 def clean_alphanumeric(text):
+    """Bina space, bina symbol ke lowercase text banata hai"""
     return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
 
 def generate_barcode_image(code_text):
@@ -85,7 +87,6 @@ if uploaded_csv and uploaded_pdf:
         track_val = clean_val(row[tracking_col])
         if clean_oid and track_val:
             shipment_records.append({
-                "order_raw": raw_oid,
                 "order_clean": clean_oid,
                 "sku_val": sku_val,
                 "sku_clean": clean_alphanumeric(sku_val),
@@ -102,7 +103,6 @@ if uploaded_csv and uploaded_pdf:
         total_pages = len(doc)
         matched_count = 0
         removed_pan_pages = 0
-        debug_logs = []
 
         for page_num in range(total_pages):
             page = doc[page_num]
@@ -110,59 +110,60 @@ if uploaded_csv and uploaded_pdf:
             text_lower = raw_text.lower()
             text_clean = clean_alphanumeric(raw_text)
 
-            # Rule 1: PAN Check
+            # Rule 1: Strict PAN Check
             if TARGET_PAN not in text_lower:
                 removed_pan_pages += 1
                 continue
 
-            # Flexible extraction for Order Number
+            # Extract 17-digit Order Number
             order_clean = None
-            found_order_raw = None
-            
-            # Match 1: 3-7-7 digits
             order_match = re.search(r'(\d{3})\s*[-–—]\s*(\d{7})\s*[-–—]\s*(\d{7})', raw_text)
             if order_match:
-                found_order_raw = f"{order_match.group(1)}-{order_match.group(2)}-{order_match.group(3)}"
-                order_clean = clean_alphanumeric(found_order_raw)
+                order_clean = f"{order_match.group(1)}{order_match.group(2)}{order_match.group(3)}"
             else:
-                # Match 2: Any 17 digit order number
-                raw_nums = re.findall(r'\b\d{3}[-–—\d]{14,17}\b', raw_text)
-                for num in raw_nums:
-                    cleaned_candidate = clean_alphanumeric(num)
-                    if len(cleaned_candidate) == 17:
-                        order_clean = cleaned_candidate
-                        found_order_raw = num
-                        break
+                num_match = re.search(r'order\s*number\s*[:\s]*(\d{3}[-–—\d]{14,16}\d)', raw_text, re.IGNORECASE)
+                if num_match:
+                    order_clean = clean_alphanumeric(num_match.group(1))
 
             target_tracking_id = None
-            debug_info = f"Page {page_num+1}: Order Found: `{found_order_raw}` | Clean: `{order_clean}`"
 
             if order_clean:
-                # Match with CSV records
+                # Find all records for this order in CSV
                 matching_rows = [r for r in shipment_records if r["order_clean"] == order_clean]
 
-                if matching_rows:
-                    debug_info += f" | Found {len(matching_rows)} CSV match"
-                    # Try SKU matching
+                if len(matching_rows) == 1:
+                    target_tracking_id = matching_rows[0]["track"]
+                elif len(matching_rows) > 1:
+                    # 1. Bracket extraction: Amazon writes ( SKU ) in description
+                    brackets = re.findall(r'\(\s*([^()]+?)\s*\)', raw_text)
+                    cleaned_bracket_items = [clean_alphanumeric(b) for b in brackets]
+
+                    # Match SKU from brackets
                     for r in matching_rows:
-                        if r["sku_clean"] and r["sku_clean"] in text_clean:
+                        if r["sku_clean"] in cleaned_bracket_items:
                             target_tracking_id = r["track"]
-                            debug_info += f" | SKU Matched: `{r['sku_val']}` -> Tracking: `{target_tracking_id}`"
                             break
 
-                    # Fallback to first tracking if SKU didn't match
+                    # 2. Match SKU anywhere in normalized text
+                    if not target_tracking_id:
+                        for r in matching_rows:
+                            if r["sku_clean"] and r["sku_clean"] in text_clean:
+                                target_tracking_id = r["track"]
+                                break
+
+                    # 3. Partial / word boundary match (e.g. ORDMUPL120 or A-ORBNEGM100TG)
+                    if not target_tracking_id:
+                        for r in matching_rows:
+                            core_sku = re.sub(r'^[a-zA-Z]-', '', r["sku_clean"]) # strip leading prefix like a-
+                            if len(core_sku) >= 4 and core_sku in text_clean:
+                                target_tracking_id = r["track"]
+                                break
+
+                    # 4. Fallback if still not matched
                     if not target_tracking_id:
                         target_tracking_id = matching_rows[0]["track"]
-                        debug_info += f" | SKU Fallback to 1st tracking: `{target_tracking_id}`"
-                else:
-                    debug_info += " | ❌ Order Clean NOT found in CSV"
-            else:
-                debug_info += " | ❌ No Order Number extracted from PDF text"
 
-            if page_num < 4:
-                debug_logs.append(debug_info)
-
-            # Barcode and Tracking Stamping
+            # Rule 2: Barcode & Tracking Stamping
             if target_tracking_id:
                 barcode_rect = fitz.Rect(40, 58, 235, 82)
                 page.draw_rect(barcode_rect, color=(1.0, 1.0, 1.0), fill=(1.0, 1.0, 1.0), width=0)
@@ -194,20 +195,13 @@ if uploaded_csv and uploaded_pdf:
 
             new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
-        # Output Results & Debug Box
-        st.subheader("🔍 Inspection Result:")
-        for log in debug_logs:
-            if "❌" in log:
-                st.error(log)
-            else:
-                st.success(log)
-
         output_buffer = io.BytesIO()
         new_doc.save(output_buffer)
         output_buffer.seek(0)
 
+        st.balloons()
         st.success(
-            f"🎉 **Summary:**\n"
+            f"🎉 **Processing Complete!**\n\n"
             f"- Total Pages Kept: **{len(new_doc)}**\n"
             f"- Barcode Stamped: **{matched_count}** pages\n"
             f"- Non-PAN Removed: **{removed_pan_pages}** pages"
