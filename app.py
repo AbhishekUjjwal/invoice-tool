@@ -13,9 +13,9 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur Invoice PDF upload karein. **Exact SKU-to-Tracking Mapping** apply hogi.")
+st.write("Shipment Report aur Invoice PDF upload karein. **PAN: AALCR5906L Filter + Dynamic SKU Matching** apply hoga.")
 
-# Target PAN jisko PDF me rakhna hai
+# Target PAN jisko filter karke rakhna hai
 TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
@@ -30,7 +30,7 @@ def clean_val(v):
     return s.strip()
 
 def clean_alphanumeric(text):
-    """Remove special chars, hyphens, spaces to match SKUs reliably"""
+    """Special characters, hyphen aur spaces hata kar standard string banata hai"""
     return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
 
 def generate_barcode_image(code_text):
@@ -68,7 +68,7 @@ if uploaded_csv and uploaded_pdf:
         else:
             df = pd.read_excel(uploaded_csv, dtype=str)
     except Exception as e:
-        st.error(f"File read error: {e}")
+        st.error(f"File read karne me error: {e}")
         st.stop()
 
     # Column Auto-Detection
@@ -83,7 +83,7 @@ if uploaded_csv and uploaded_pdf:
         st.error("CSV me Order ID, SKU aur Tracking ID column nahi mila!")
         st.stop()
 
-    # Records list build karein
+    # Records build karna
     shipment_records = []
     for _, row in df[[order_col, msku_col, tracking_col]].dropna().iterrows():
         o_id = clean_val(row[order_col]).lower()
@@ -99,7 +99,7 @@ if uploaded_csv and uploaded_pdf:
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}**")
 
-    if st.button("🚀 Process & Stamp Invoices (Exact SKU = Tracking)", type="primary"):
+    if st.button("🚀 Process & Stamp Invoices (PAN Filter + Dynamic SKU)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -119,8 +119,9 @@ if uploaded_csv and uploaded_pdf:
             page = doc[page_num]
             raw_text = page.get_text()
             text_lower = raw_text.lower()
+            text_clean = clean_alphanumeric(raw_text)
 
-            # Rule 1: PAN Check - Agar AALCR5906L nahi hai to page drop karo
+            # Rule 1: Strict PAN Check (AALCR5906L na hone par page drop ho jayega)
             if TARGET_PAN not in text_lower:
                 removed_pan_pages += 1
                 continue
@@ -131,36 +132,35 @@ if uploaded_csv and uploaded_pdf:
             if order_match:
                 found_order_id = order_match.group(0).lower()
 
-                # Is order ke saare records CSV se nikalo
+                # Is order ke matching CSV records nikaalo
                 matching_rows = [r for r in shipment_records if r["order_id"] == found_order_id]
 
                 if len(matching_rows) == 1:
-                    # Agar order me ek hi row hai to wahi tracking use hogi
+                    # Single item order hone par direct wahi tracking ID
                     target_tracking_id = matching_rows[0]["track"]
                 elif len(matching_rows) > 1:
-                    # Agar order me 2 ya usse zyada SKUs hain, to invoice text se match karein
-                    # 1. Invoice text me bracket ke andar SKU dhoondo jaise: ( ORDMUPL120 ) ya ( A-ORBNEGM100TG )
+                    # Multi-item / Multiple SKU order hone par dynamic extraction
                     skus_in_brackets = re.findall(r'\(\s*([A-Za-z0-9_\-\.\/]+)\s*\)', raw_text)
                     cleaned_bracket_skus = [clean_alphanumeric(s) for s in skus_in_brackets]
 
-                    # Bracket ke SKU se match karo
+                    # 1. Bracket ke SKU se match karein
                     for r in matching_rows:
                         if r["sku_clean"] in cleaned_bracket_skus:
                             target_tracking_id = r["track"]
                             break
 
-                    # 2. Agar bracket match na ho to raw text me pure SKU dhoondo
+                    # 2. Text me exact clean SKU dhoondo (agar bracket format alag ho)
                     if not target_tracking_id:
                         for r in matching_rows:
-                            if r["sku"].lower() in text_lower or (r["sku_clean"] and r["sku_clean"] in clean_alphanumeric(raw_text)):
+                            if r["sku_clean"] and r["sku_clean"] in text_clean:
                                 target_tracking_id = r["track"]
                                 break
 
-            # Rule 2: Barcode aur Tracking ID stamp karein
+            # Rule 2: Barcode aur Tracking Stamping
             if target_tracking_id:
                 barcode_rect = fitz.Rect(40, 58, 235, 82)
 
-                # White box taaki background saaf rahe
+                # Pure white background taaki purana text hide ho sake
                 page.draw_rect(
                     barcode_rect,
                     color=(1.0, 1.0, 1.0),
@@ -198,7 +198,7 @@ if uploaded_csv and uploaded_pdf:
 
                 matched_count += 1
 
-            # Valid PAN wale saare pages PDF me judenge
+            # PAN match wale sabhi pages PDF me safely judenge
             new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
         output_buffer = io.BytesIO()
