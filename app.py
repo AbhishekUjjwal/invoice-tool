@@ -85,13 +85,14 @@ if uploaded_csv and uploaded_pdf:
     # Records build karna
     shipment_records = []
     for _, row in df[[order_col, msku_col, tracking_col]].dropna().iterrows():
-        o_id = clean_val(row[order_col]).lower()
+        raw_oid = clean_val(row[order_col])
+        clean_oid = clean_alphanumeric(raw_oid)
         sku_val = clean_val(row[msku_col])
         track_val = clean_val(row[tracking_col])
-        if o_id and track_val:
+        if clean_oid and track_val:
             shipment_records.append({
-                "order_id": o_id,
-                "sku": sku_val,
+                "order_clean": clean_oid,
+                "sku_val": sku_val,
                 "sku_clean": clean_alphanumeric(sku_val),
                 "track": track_val
             })
@@ -125,23 +126,32 @@ if uploaded_csv and uploaded_pdf:
                 removed_pan_pages += 1
                 continue
 
-            order_match = re.search(r'\b\d{3}-\d{7}-\d{7}\b', raw_text)
+            # Multi-layer Order ID finder
+            order_clean = None
+            # Standard Amazon Order format: 3 digits - 7 digits - 7 digits
+            order_match = re.search(r'(\d{3})\s*[-–—]\s*(\d{7})\s*[-–—]\s*(\d{7})', raw_text)
+            if order_match:
+                order_clean = f"{order_match.group(1)}{order_match.group(2)}{order_match.group(3)}"
+            else:
+                # Fallback: Order Number text ke aas-paas dhoondo
+                num_match = re.search(r'order\s*number\s*[:\s]*(\d{3}[-–—\d]{14,16}\d)', raw_text, re.IGNORECASE)
+                if num_match:
+                    order_clean = clean_alphanumeric(num_match.group(1))
+
             target_tracking_id = None
 
-            if order_match:
-                found_order_id = order_match.group(0).lower()
-
-                # Is order ke saare CSV rows collect karo
-                matching_rows = [r for r in shipment_records if r["order_id"] == found_order_id]
+            if order_clean:
+                # Is order ke matching CSV records nikaalo
+                matching_rows = [r for r in shipment_records if r["order_clean"] == order_clean]
 
                 if matching_rows:
-                    # Priority 1: SKU Match (Exact SKU khojo)
+                    # Priority 1: SKU Match (Invoice text me SKU dhoondo)
                     for r in matching_rows:
                         if r["sku_clean"] and r["sku_clean"] in text_clean:
                             target_tracking_id = r["track"]
                             break
 
-                    # Priority 2: Fallback (Agar invoice text me SKU format match na ho, pehla tracking uthao)
+                    # Priority 2: Fallback (Agar single row ho ya text format alag ho)
                     if not target_tracking_id:
                         target_tracking_id = matching_rows[0]["track"]
 
