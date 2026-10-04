@@ -14,9 +14,9 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur Invoice PDF upload karein. **Strict PAN Filter (AALCR5906L)** apply hoga.")
+st.write("Shipment Report aur Invoice PDF upload karein. **Strict PAN (AALCR5906L) + Exact SKU Matching** apply hoga.")
 
-# Target PAN jisko rakhna hai (baaki sab remove honge)
+# Target PAN jisko filter karna hai
 TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
@@ -95,7 +95,7 @@ if uploaded_csv and uploaded_pdf:
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}**")
 
-    if st.button("🚀 Process & Filter Invoices (Exact Match)", type="primary"):
+    if st.button("🚀 Process & Stamp Invoices (Exact SKU Match)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -117,7 +117,7 @@ if uploaded_csv and uploaded_pdf:
             raw_text = page.get_text()
             text_lower = raw_text.lower()
 
-            # Rule 1: PAN check (AALCR5906L hona zaroori hai)
+            # Rule 1: PAN Filter (AALCR5906L check)
             if TARGET_PAN not in text_lower:
                 removed_pan_pages += 1
                 continue
@@ -128,20 +128,24 @@ if uploaded_csv and uploaded_pdf:
             if order_match:
                 found_order_id = order_match.group(0).lower()
 
-                # Match by Order ID + SKU
+                # Step 1: Exact Match (Order ID + SKU match on invoice page)
                 matched_rec = None
                 for rec in shipment_records:
                     if not rec["used"] and rec["order_id"] == found_order_id:
-                        if rec["sku"] and rec["sku"] in text_lower:
+                        # Clean SKU ko invoice text ke andar check karo
+                        clean_rec_sku = rec["sku"].replace("-", "").replace(" ", "")
+                        clean_page_text = text_lower.replace("-", "").replace(" ", "")
+                        
+                        if (rec["sku"] and rec["sku"] in text_lower) or (clean_rec_sku and clean_rec_sku in clean_page_text):
                             matched_rec = rec
                             break
 
-                # Fallback match by Order ID
+                # Step 2: Fallback (Agar single item order ho aur SKU name me slight diff ho)
                 if not matched_rec:
-                    for rec in shipment_records:
-                        if not rec["used"] and rec["order_id"] == found_order_id:
-                            matched_rec = rec
-                            break
+                    # Check karo is order ke total kitne active tracking bache hain
+                    remaining_for_order = [r for r in shipment_records if not r["used"] and r["order_id"] == found_order_id]
+                    if len(remaining_for_order) == 1:
+                        matched_rec = remaining_for_order[0]
 
                 if matched_rec:
                     target_tracking_id = matched_rec["track"]
@@ -163,7 +167,7 @@ if uploaded_csv and uploaded_pdf:
                 if barcode_img_bytes:
                     page.insert_image(barcode_rect, stream=barcode_img_bytes, keep_proportion=False)
 
-                # 1. Barcode ke neeche BOLD Tracking ID
+                # 1. Barcode ke theek neeche BOLD Tracking ID
                 stamp_msg = f"TRACKING: {target_tracking_id}"
                 page.insert_text(
                     (barcode_rect.x0 + 10, 95),
@@ -173,7 +177,7 @@ if uploaded_csv and uploaded_pdf:
                     color=(0, 0, 0)
                 )
 
-                # 2. Addon: Order Date ke theek neeche BOLD Tracking ID
+                # 2. Order Date ke theek neeche BOLD Tracking ID
                 date_instances = page.search_for("Order Date:")
                 if not date_instances:
                     date_instances = page.search_for("Order Date")
