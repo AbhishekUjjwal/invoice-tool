@@ -3,7 +3,6 @@ import pandas as pd
 import pymupdf as fitz
 import re
 import io
-import time
 import barcode
 from barcode.writer import ImageWriter
 
@@ -14,9 +13,9 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur Invoice PDF upload karein. **Strict PAN (AALCR5906L) + Exact SKU Matching** apply hoga.")
+st.write("Shipment Report aur Invoice PDF upload karein. **PAN: AALCR5906L Filter + SKU Mapping** auto-apply hoga.")
 
-# Target PAN jisko filter karna hai
+# Target PAN jisko PDF me rakhna hai (baaki sab remove honge)
 TARGET_PAN = "aalcr5906l"
 
 # File Uploaders
@@ -65,10 +64,10 @@ if uploaded_csv and uploaded_pdf:
         else:
             df = pd.read_excel(uploaded_csv, dtype=str)
     except Exception as e:
-        st.error(f"File read karne me error: {e}")
+        st.error(f"File read error: {e}")
         st.stop()
 
-    # Column Auto Detection
+    # Column Auto-Detection
     col_mapping = {str(col).strip().lower(): col for col in df.columns}
     order_col = next((col_mapping[c] for c in col_mapping if "order" in c), None)
     msku_col = next((col_mapping[c] for c in col_mapping if "sku" in c or "msku" in c), None)
@@ -77,25 +76,27 @@ if uploaded_csv and uploaded_pdf:
     st.success(f"Matched Columns: Order = **{order_col}** | SKU = **{msku_col}** | Tracking = **{tracking_col}**")
 
     if not (order_col and msku_col and tracking_col):
-        st.error("CSV me Order ID, MSKU aur Tracking ID column nahi mila!")
+        st.error("CSV me Order ID, SKU aur Tracking ID column nahi mila!")
         st.stop()
 
+    # Records build karna
     shipment_records = []
     for _, row in df[[order_col, msku_col, tracking_col]].dropna().iterrows():
         o_id = clean_val(row[order_col]).lower()
-        sku = clean_val(row[msku_col]).lower()
-        track = clean_val(row[tracking_col])
-        if o_id and track:
+        sku_val = clean_val(row[msku_col])
+        track_val = clean_val(row[tracking_col])
+        if o_id and track_val:
             shipment_records.append({
                 "order_id": o_id,
-                "sku": sku,
-                "track": track,
-                "used": False
+                "sku": sku_val,
+                "sku_lower": sku_val.lower(),
+                "sku_clean": sku_val.lower().replace("-", "").replace(" ", ""),
+                "track": track_val
             })
 
     st.info(f"Total Records in CSV: **{len(shipment_records)}**")
 
-    if st.button("🚀 Process & Stamp Invoices (Exact SKU Match)", type="primary"):
+    if st.button("🚀 Process & Stamp Invoices (PAN Filter + SKU Match)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -106,7 +107,6 @@ if uploaded_csv and uploaded_pdf:
         total_pages = len(doc)
         matched_count = 0
         removed_pan_pages = 0
-        skipped_no_tracking = 0
 
         for page_num in range(total_pages):
             progress = (page_num + 1) / total_pages
@@ -116,8 +116,9 @@ if uploaded_csv and uploaded_pdf:
             page = doc[page_num]
             raw_text = page.get_text()
             text_lower = raw_text.lower()
+            text_clean = text_lower.replace("-", "").replace(" ", "")
 
-            # Rule 1: PAN Filter (AALCR5906L check)
+            # Rule 1: PAN Check - Agar AALCR5906L nahi hai to page drop ho jayega
             if TARGET_PAN not in text_lower:
                 removed_pan_pages += 1
                 continue
@@ -128,34 +129,25 @@ if uploaded_csv and uploaded_pdf:
             if order_match:
                 found_order_id = order_match.group(0).lower()
 
-                # Step 1: Exact Match (Order ID + SKU match on invoice page)
-                matched_rec = None
-                for rec in shipment_records:
-                    if not rec["used"] and rec["order_id"] == found_order_id:
-                        # Clean SKU ko invoice text ke andar check karo
-                        clean_rec_sku = rec["sku"].replace("-", "").replace(" ", "")
-                        clean_page_text = text_lower.replace("-", "").replace(" ", "")
-                        
-                        if (rec["sku"] and rec["sku"] in text_lower) or (clean_rec_sku and clean_rec_sku in clean_page_text):
-                            matched_rec = rec
+                # Is order ke sabhi matching records CSV se nikalo
+                matching_rows = [r for r in shipment_records if r["order_id"] == found_order_id]
+
+                if matching_rows:
+                    # SKU ko invoice description me match karke tracking ID select karo
+                    for r in matching_rows:
+                        if (r["sku_lower"] in text_lower) or (r["sku_clean"] and r["sku_clean"] in text_clean):
+                            target_tracking_id = r["track"]
                             break
 
-                # Step 2: Fallback (Agar single item order ho aur SKU name me slight diff ho)
-                if not matched_rec:
-                    # Check karo is order ke total kitne active tracking bache hain
-                    remaining_for_order = [r for r in shipment_records if not r["used"] and r["order_id"] == found_order_id]
-                    if len(remaining_for_order) == 1:
-                        matched_rec = remaining_for_order[0]
+                    # Fallback: Agar single item order hai ya slight text difference hai
+                    if not target_tracking_id:
+                        target_tracking_id = matching_rows[0]["track"]
 
-                if matched_rec:
-                    target_tracking_id = matched_rec["track"]
-                    matched_rec["used"] = True
-
-            # Rule 2: Barcode & Tracking Stamping
+            # Rule 2: Barcode aur Tracking ID stamping
             if target_tracking_id:
-                # Top Barcode area
                 barcode_rect = fitz.Rect(40, 58, 235, 82)
 
+                # White background box
                 page.draw_rect(
                     barcode_rect,
                     color=(1.0, 1.0, 1.0),
@@ -167,17 +159,16 @@ if uploaded_csv and uploaded_pdf:
                 if barcode_img_bytes:
                     page.insert_image(barcode_rect, stream=barcode_img_bytes, keep_proportion=False)
 
-                # 1. Barcode ke theek neeche BOLD Tracking ID
-                stamp_msg = f"TRACKING: {target_tracking_id}"
+                # A. Barcode ke theek neeche BOLD Tracking ID
                 page.insert_text(
                     (barcode_rect.x0 + 10, 95),
-                    stamp_msg,
+                    f"TRACKING: {target_tracking_id}",
                     fontsize=10.5,
                     fontname="hebo",
                     color=(0, 0, 0)
                 )
 
-                # 2. Order Date ke theek neeche BOLD Tracking ID
+                # B. Order Date ke theek neeche BOLD Tracking ID
                 date_instances = page.search_for("Order Date:")
                 if not date_instances:
                     date_instances = page.search_for("Order Date")
@@ -193,9 +184,9 @@ if uploaded_csv and uploaded_pdf:
                     )
 
                 matched_count += 1
-                new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
-            else:
-                skipped_no_tracking += 1
+
+            # PAN match wale page ko final output PDF me save karo
+            new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
         output_buffer = io.BytesIO()
         new_doc.save(output_buffer)
@@ -206,10 +197,10 @@ if uploaded_csv and uploaded_pdf:
 
         st.balloons()
         st.success(
-            f"🎉 **Filtering Complete!**\n\n"
-            f"- Total Stamped & Saved: **{matched_count}** pages\n"
-            f"- Wrong PAN Removed: **{removed_pan_pages}** pages\n"
-            f"- Missing Tracking Removed: **{skipped_no_tracking}** pages"
+            f"🎉 **Processing Complete!**\n\n"
+            f"- Total Pages in PDF: **{len(new_doc)}**\n"
+            f"- Barcode Stamped: **{matched_count}** pages\n"
+            f"- Non-PAN Pages Removed: **{removed_pan_pages}** pages"
         )
 
         st.download_button(
