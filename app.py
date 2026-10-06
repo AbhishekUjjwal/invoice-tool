@@ -7,46 +7,69 @@ import zipfile
 import barcode
 from barcode.writer import ImageWriter
 
+# Page Configuration - Enterprise Wide Layout
 st.set_page_config(
-    page_title="Operations Hub | E-Commerce Automation",
-    page_icon="🏢",
+    page_title="Delhi Operations Hub | E-Commerce Automation",
+    page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# Custom Styling
 st.markdown("""
     <style>
-    .main { background-color: #f8fafc; }
+    .main { background-color: #0f172a; color: #f8fafc; }
     .stMetric {
-        background-color: #ffffff;
+        background-color: #1e293b;
         padding: 12px;
         border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        border: 1px solid #334155;
     }
-    div[data-testid="stFileUploader"] {
-        border: 1px dashed #4b5563;
-        padding: 10px;
-        border-radius: 8px;
-        background-color: #ffffff;
+    .unit-card {
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        border: 1px solid #38bdf8;
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 12px;
+    }
+    .unit-badge {
+        background-color: #f59e0b;
+        color: #000;
+        font-weight: bold;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        display: inline-block;
+        margin-bottom: 6px;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# Sidebar
 with st.sidebar:
-    st.title("🏢 Operations Hub")
-    st.caption("Central Automation Portal")
+    st.title("🏛️ Delhi Operations Hub")
+    st.caption("Central E-Commerce Operations Portal")
     st.divider()
+
     st.markdown("**Active Unit Config:**")
-    st.info("🎯 **Target PAN:** `AALCR5906L`\n\n📌 **Seller:** Romsons Prime Pvt Ltd")
+    st.markdown("""
+        <div class="unit-card">
+            <span class="unit-badge">🏷️ AMZ-ED</span>
+            <div style="font-weight: 600; font-size: 14px; color: #38bdf8;">Amazon Invoice Editor Unit</div>
+            <div style="font-size: 12px; color: #cbd5e1; margin-top: 4px;">🎯 <b>Target PAN:</b> <code>AALCR5906L</code></div>
+            <div style="font-size: 12px; color: #cbd5e1;">🏢 <b>Seller:</b> Romsons Prime Pvt Ltd</div>
+        </div>
+    """, unsafe_allow_html=True)
+
     st.divider()
-    st.markdown("💡 **Supported Tools:**\n- Amazon Barcode & Tracking Stamper\n- Blinkit e-Invoice Creator")
+    st.markdown("💡 **Supported Tools:**\n- 📑 Amazon Invoice Editor\n- ⚡ Blinkit e-Invoice Creator")
 
-tab_amazon, tab_blinkit = st.tabs(["📦 Amazon Invoice Stamper", "⚡ Blinkit e-Invoice Tool"])
+tab_amazon, tab_blinkit = st.tabs(["📑 Amazon Invoice Editor", "⚡ Blinkit e-Invoice Tool"])
 
-# ----------------- TAB 1: AMAZON STAMPER -----------------
+# ----------------- TAB 1: AMAZON INVOICE EDITOR -----------------
 with tab_amazon:
-    st.subheader("📦 Amazon Shipment Barcode & Tracking Automation")
-    st.caption("Shipment Report aur multiple Invoice PDFs upload karein. Automatic PAN filter (AALCR5906L) + Guaranteed Multi-SKU Matching apply hogi.")
+    st.subheader("📑 Amazon Invoice Editor (Product Description Matcher)")
+    st.caption("Shipment Report aur Invoice PDF upload karein. Automatic PAN filter (AALCR5906L) + **Full Product Description Matching** apply hogi.")
 
     TARGET_PAN = "aalcr5906l"
 
@@ -66,14 +89,11 @@ with tab_amazon:
     def clean_alphanumeric(text):
         return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
 
-    def extract_skus_and_asins(text):
-        """Extracts text inside brackets and 10-char ASINs from page"""
-        bracket_matches = re.findall(r'\(\s*([A-Za-z0-9_\-\.\/\s]+?)\s*\)', text)
-        skus = [clean_alphanumeric(m) for m in bracket_matches if len(clean_alphanumeric(m)) >= 3]
-        
-        # Amazon ASIN pattern (e.g. B0DZ5WBCZD, B07H4QVBV8)
-        asins = [clean_alphanumeric(a) for a in re.findall(r'\b(B0[A-Z0-9]{8})\b', text)]
-        return skus, asins
+    def get_token_words(text):
+        """Extract meaningful words (length >= 2) for matching item descriptions"""
+        words = re.findall(r'[a-zA-Z0-9]+', str(text).lower())
+        stop_words = {'the', 'and', 'for', 'with', 'pcs', 'piece', 'pieces', 'only', 'total', 'hsn', 'gst', 'rs', 'inr'}
+        return set([w for w in words if len(w) >= 2 and w not in stop_words])
 
     def generate_barcode_image(code_text):
         try:
@@ -114,32 +134,44 @@ with tab_amazon:
 
         col_mapping = {str(col).strip().lower(): col for col in df.columns}
         order_col = next((col_mapping[c] for c in col_mapping if "order" in c), None)
-        msku_col = next((col_mapping[c] for c in col_mapping if "sku" in c or "msku" in c), None)
         tracking_col = next((col_mapping[c] for c in col_mapping if "track" in c or "tracing" in c), None)
+        
+        # Look for Title / Product / Description columns
+        title_col = next((col_mapping[c] for c in col_mapping if any(k in c for k in ["title", "item-name", "item_name", "product", "desc"])), None)
+        sku_col = next((col_mapping[c] for c in col_mapping if "sku" in c or "msku" in c), None)
 
         m1, m2, m3 = st.columns(3)
         m1.metric("Order Column", str(order_col))
-        m2.metric("SKU Column", str(msku_col))
+        m2.metric("Product Description Column", str(title_col if title_col else sku_col))
         m3.metric("Tracking Column", str(tracking_col))
 
-        if not (order_col and msku_col and tracking_col):
-            st.error("CSV me Order ID, SKU aur Tracking ID column nahi mila!")
+        if not (order_col and tracking_col):
+            st.error("CSV me Order ID aur Tracking ID column hona zaroori hai!")
             st.stop()
 
+        # Build order records
         order_records_map = {}
-        for _, row in df[[order_col, msku_col, tracking_col]].dropna().iterrows():
-            raw_oid = clean_val(row[order_col])
+        for _, row in df.iterrows():
+            raw_oid = clean_val(row.get(order_col, ""))
             clean_oid = clean_alphanumeric(raw_oid)
-            sku_val = clean_val(row[msku_col])
-            sku_clean = clean_alphanumeric(sku_val)
-            track_val = clean_val(row[tracking_col])
+            track_val = clean_val(row.get(tracking_col, ""))
+
+            # Build full searchable text from Title and SKU
+            desc_parts = []
+            if title_col and not pd.isna(row.get(title_col, "")):
+                desc_parts.append(str(row[title_col]))
+            if sku_col and not pd.isna(row.get(sku_col, "")):
+                desc_parts.append(str(row[sku_col]))
+
+            full_desc = " ".join(desc_parts).strip()
+            desc_words = get_token_words(full_desc)
 
             if clean_oid and track_val:
                 if clean_oid not in order_records_map:
                     order_records_map[clean_oid] = []
                 order_records_map[clean_oid].append({
-                    "sku_val": sku_val,
-                    "sku_clean": sku_clean,
+                    "full_desc": full_desc,
+                    "desc_words": desc_words,
                     "track": track_val,
                     "used": False
                 })
@@ -168,14 +200,13 @@ with tab_amazon:
                     page = doc[page_num]
                     raw_text = page.get_text()
                     text_lower = raw_text.lower()
-                    text_clean = clean_alphanumeric(raw_text)
 
-                    # Rule 1: PAN Filter
+                    # Rule 1: Strict PAN Filter
                     if TARGET_PAN not in text_lower:
                         file_removed_pan += 1
                         continue
 
-                    # Order ID regex
+                    # Extract 17-digit Order Number
                     order_clean = None
                     order_match = re.search(r'(\d{3})\s*[-–—]\s*(\d{7})\s*[-–—]\s*(\d{7})', raw_text)
                     if order_match:
@@ -193,26 +224,29 @@ with tab_amazon:
                         if len(matching_rows) == 1:
                             target_tracking_id = matching_rows[0]["track"]
                         else:
-                            extracted_skus, extracted_asins = extract_skus_and_asins(raw_text)
+                            # MULTI-SKU ORDER: Match invoice description against CSV item descriptions
+                            # Extract words specifically around Description area or whole page
+                            page_words = get_token_words(raw_text)
 
-                            # 1. Match bracket SKU with CSV SKU (containment / exact)
-                            for cand_sku in extracted_skus:
-                                for r in matching_rows:
-                                    if (cand_sku in r["sku_clean"]) or (r["sku_clean"] in cand_sku):
-                                        target_tracking_id = r["track"]
-                                        break
-                                if target_tracking_id:
-                                    break
+                            best_match_row = None
+                            highest_overlap = -1
 
-                            # 2. Match CSV SKU in the full invoice text
-                            if not target_tracking_id:
-                                for r in matching_rows:
-                                    if r["sku_clean"] and (r["sku_clean"] in text_clean):
-                                        target_tracking_id = r["track"]
-                                        break
+                            for r in matching_rows:
+                                if not r["desc_words"]:
+                                    continue
+                                # Intersection of common unique words (e.g. 'underpads', 'mattey', 'diapers')
+                                common = page_words.intersection(r["desc_words"])
+                                overlap_score = len(common)
 
-                            # 3. Fallback: Unused row assign karo taaki tracking stamp kabhi miss na ho
-                            if not target_tracking_id:
+                                if overlap_score > highest_overlap:
+                                    highest_overlap = overlap_score
+                                    best_match_row = r
+
+                            if best_match_row and highest_overlap > 0:
+                                target_tracking_id = best_match_row["track"]
+                                best_match_row["used"] = True
+                            else:
+                                # Fallback: unused row if words couldn't match
                                 unused_rows = [r for r in matching_rows if not r["used"]]
                                 if unused_rows:
                                     target_tracking_id = unused_rows[0]["track"]
@@ -308,4 +342,4 @@ with tab_amazon:
 with tab_blinkit:
     st.subheader("⚡ Blinkit e-Invoice Management Tool")
     st.caption("Blinkit purchase orders, ASN aur e-invoicing automation portal.")
-    st.info("Blinkit Tool ka script code provide karein, use is tab me activate kar diya jayega.")
+    st.info("Blinkit Tool ka script code share karein, use is tab me activate kar diya jayega.")
