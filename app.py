@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("📦 Amazon Invoice Barcode & Tracking Stamper")
-st.write("Shipment Report aur multiple Invoice PDFs upload karein. **Har file alag-alag process aur download hogi** (PAN: AALCR5906L strict filter ke sath).")
+st.write("Shipment Report aur multiple Invoice PDFs upload karein. **Strict PAN (AALCR5906L) + Exact SKU-to-Tracking Matching** apply hoga.")
 
 TARGET_PAN = "aalcr5906l"
 
@@ -34,7 +34,22 @@ def clean_val(v):
     return s.strip()
 
 def clean_alphanumeric(text):
+    """Normalize text: removes hyphens, spaces, special chars for 100% exact equality check"""
     return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
+
+def extract_exact_sku_from_page(text):
+    """
+    Amazon invoice format: ASIN ( SKU )
+    Example: B0DZ5WBCZD ( ORDMUPL80 ) -> extracts 'ordmupl80'
+             B07H4QVBV8 ( ORDPM60 )   -> extracts 'ordpm60'
+    """
+    matches = re.findall(r'\(\s*([A-Za-z0-9_\-\.\/\s]+?)\s*\)', text)
+    extracted = []
+    for m in matches:
+        cleaned = clean_alphanumeric(m)
+        if len(cleaned) >= 3:
+            extracted.append(cleaned)
+    return extracted
 
 def generate_barcode_image(code_text):
     try:
@@ -84,24 +99,32 @@ if uploaded_csv and uploaded_pdfs:
         st.error("CSV me required columns nahi mile!")
         st.stop()
 
-    shipment_records = []
+    # Pre-build lookup map: (order_clean, sku_clean) -> tracking_id
+    shipment_lookup = {}
+    order_records_map = {}
+
     for _, row in df[[order_col, msku_col, tracking_col]].dropna().iterrows():
         raw_oid = clean_val(row[order_col])
         clean_oid = clean_alphanumeric(raw_oid)
         sku_val = clean_val(row[msku_col])
+        sku_clean = clean_alphanumeric(sku_val)
         track_val = clean_val(row[tracking_col])
+
         if clean_oid and track_val:
-            shipment_records.append({
-                "order_clean": clean_oid,
+            key = (clean_oid, sku_clean)
+            shipment_lookup[key] = track_val
+
+            if clean_oid not in order_records_map:
+                order_records_map[clean_oid] = []
+            order_records_map[clean_oid].append({
                 "sku_val": sku_val,
-                "sku_clean": clean_alphanumeric(sku_val),
-                "track": track_val,
-                "used": False
+                "sku_clean": sku_clean,
+                "track": track_val
             })
 
-    st.info(f"Total Records in CSV: **{len(shipment_records)}** | Selected PDFs: **{len(uploaded_pdfs)} file(s)**")
+    st.info(f"Total Unique Order Mappings: **{len(shipment_lookup)}** | Selected PDFs: **{len(uploaded_pdfs)} file(s)**")
 
-    if st.button("🚀 Process Invoices Individually", type="primary"):
+    if st.button("🚀 Process Invoices (Exact SKU Match)", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -110,7 +133,7 @@ if uploaded_csv and uploaded_pdfs:
 
         for file_idx, pdf_file in enumerate(uploaded_pdfs):
             status_text.text(f"Processing File {file_idx+1}/{total_files}: {pdf_file.name}...")
-            
+
             pdf_bytes = pdf_file.read()
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             new_doc = fitz.open()
@@ -123,14 +146,13 @@ if uploaded_csv and uploaded_pdfs:
                 page = doc[page_num]
                 raw_text = page.get_text()
                 text_lower = raw_text.lower()
-                text_clean = clean_alphanumeric(raw_text)
 
-                # Rule 1: PAN Check
+                # Rule 1: Strict PAN check (AALCR5906L)
                 if TARGET_PAN not in text_lower:
                     file_removed_pan += 1
                     continue
 
-                # Order Number detect karna
+                # Order ID extraction
                 order_clean = None
                 order_match = re.search(r'(\d{3})\s*[-–—]\s*(\d{7})\s*[-–—]\s*(\d{7})', raw_text)
                 if order_match:
@@ -142,40 +164,38 @@ if uploaded_csv and uploaded_pdfs:
 
                 target_tracking_id = None
 
-                if order_clean:
-                    matching_rows = [r for r in shipment_records if r["order_clean"] == order_clean]
+                if order_clean and order_clean in order_records_map:
+                    matching_rows = order_records_map[order_clean]
 
                     if len(matching_rows) == 1:
+                        # Order has only 1 SKU in CSV
                         target_tracking_id = matching_rows[0]["track"]
-                    elif len(matching_rows) > 1:
-                        # Brackets se SKU match karein: ( SKU )
-                        brackets = re.findall(r'\(\s*([^()]+?)\s*\)', raw_text)
-                        cleaned_bracket_items = [clean_alphanumeric(b) for b in brackets]
+                    else:
+                        # Multi-SKU Order: Extract SKUs enclosed in brackets from this specific page
+                        extracted_skus = extract_exact_sku_from_page(raw_text)
 
-                        for r in matching_rows:
-                            if not r["used"] and r["sku_clean"] in cleaned_bracket_items:
-                                target_tracking_id = r["track"]
-                                r["used"] = True
+                        # Step 1: Direct Exact Key Match: (order, sku)
+                        for cand_sku in extracted_skus:
+                            if (order_clean, cand_sku) in shipment_lookup:
+                                target_tracking_id = shipment_lookup[(order_clean, cand_sku)]
                                 break
 
-                        # Page text me SKU search
+                        # Step 2: In case brackets had prefix/suffix, check substring equality
                         if not target_tracking_id:
                             for r in matching_rows:
-                                if not r["used"] and (r["sku_clean"] and r["sku_clean"] in text_clean):
+                                if any(r["sku_clean"] == cand or cand in r["sku_clean"] or r["sku_clean"] in cand for cand in extracted_skus):
                                     target_tracking_id = r["track"]
-                                    r["used"] = True
                                     break
 
-                        # Fallback if needed
+                        # Step 3: Raw page text match for exact SKU
                         if not target_tracking_id:
-                            unused = [r for r in matching_rows if not r["used"]]
-                            if unused:
-                                target_tracking_id = unused[0]["track"]
-                                unused[0]["used"] = True
-                            else:
-                                target_tracking_id = matching_rows[0]["track"]
+                            text_clean = clean_alphanumeric(raw_text)
+                            for r in matching_rows:
+                                if r["sku_clean"] and r["sku_clean"] in text_clean:
+                                    target_tracking_id = r["track"]
+                                    break
 
-                # Stamping
+                # Rule 2: Stamping
                 if target_tracking_id:
                     barcode_rect = fitz.Rect(40, 58, 235, 82)
                     page.draw_rect(barcode_rect, color=(1.0, 1.0, 1.0), fill=(1.0, 1.0, 1.0), width=0)
@@ -207,7 +227,6 @@ if uploaded_csv and uploaded_pdfs:
 
                 new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
-            # File save in buffer
             out_buf = io.BytesIO()
             new_doc.save(out_buf)
             out_buf.seek(0)
@@ -228,9 +247,8 @@ if uploaded_csv and uploaded_pdfs:
         progress_bar.empty()
 
         st.balloons()
-        st.success(f"🎉 **Total {len(processed_files)} Files Processed Successfully!**")
+        st.success(f"🎉 **Total {len(processed_files)} File(s) Processed Successfully!**")
 
-        # ZIP of all files for convenience
         if len(processed_files) > 1:
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -247,7 +265,6 @@ if uploaded_csv and uploaded_pdfs:
             )
             st.write("---")
 
-        # Individual Download Buttons for each file
         st.subheader("📄 Download Individual Files:")
         for idx, item in enumerate(processed_files):
             col1, col2 = st.columns([3, 1])
